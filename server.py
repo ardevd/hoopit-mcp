@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -91,10 +92,12 @@ def parse_event_id(raw: str) -> tuple[int, int]:
 
 
 def fuzzy_match(text: str, query: str) -> bool:
-    t = (text or "").lower()
+    t = (text or "").strip().lower()
     q = (query or "").strip().lower()
     if not q:
         return True
+    if not t:
+        return False
     return q in t or t in q
 
 
@@ -122,6 +125,18 @@ def format_size(size_bytes: int | None) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
+def format_amount(minor_units: int | float | None, currency: str = "NOK") -> str:
+    if minor_units is None:
+        return "ukjent beløp"
+    value = minor_units / 100.0
+    curr = (currency or "NOK").upper()
+    if curr == "NOK":
+        if minor_units % 100 == 0:
+            return f"{int(value)} kr"
+        return f"{value:.2f}".replace(".", ",") + " kr"
+    return f"{value:.2f} {curr}"
+
+
 def _event_user_name(user: dict[str, Any] | None) -> str:
     if not user:
         return "Ukjent"
@@ -144,6 +159,11 @@ class HoopitService:
 
     def clear_cache(self) -> None:
         self._client.clear_cache()
+
+    @property
+    def user_uuid(self) -> str | None:
+        val = getattr(self._client, "user_uuid", None)
+        return val if isinstance(val, str) and val else None
 
     async def get_groups(self) -> list[dict[str, Any]]:
         return await self._client.get_groups()
@@ -184,8 +204,10 @@ class HoopitService:
 
     async def get_event_details(self, event_id_str: str) -> tuple[dict[str, Any], dict[str, Any]]:
         eid, oid = parse_event_id(event_id_str)
-        detail = await self._client.get_event_details(eid, oid)
-        my_responses = await self._client.get_my_responses(eid, oid)
+        detail, my_responses = await asyncio.gather(
+            self._client.get_event_details(eid, oid),
+            self._client.get_my_responses(eid, oid),
+        )
         return detail, my_responses
 
     async def respond_to_event(
@@ -223,6 +245,11 @@ class HoopitService:
         if not user_id:
             raise ValueError("Mangler bruker-ID for medlemmet.")
         resolved_name = _event_user_name(target.get("user"))
+        if target.get("can_edit_response") is False:
+            raise ValueError(
+                f"Kan ikke endre svar for {resolved_name} på denne aktiviteten "
+                "(svarfristen kan være utløpt eller låst)."
+            )
         result = await self._client.respond_to_event(
             eid,
             oid,
@@ -278,8 +305,10 @@ class HoopitService:
         return out
 
     async def get_post_with_comments(self, post_id: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        post = await self._client.get_post(post_id)
-        comments = await self._client.get_post_comments(post_id)
+        post, comments = await asyncio.gather(
+            self._client.get_post(post_id),
+            self._client.get_post_comments(post_id),
+        )
         return post, comments
 
     async def get_chats(self, max_chats: int = 10) -> list[dict[str, Any]]:
@@ -298,7 +327,58 @@ class HoopitService:
         return await self._client.get_drive_files()
 
     async def get_drive_file(self, file_id: int) -> dict[str, Any]:
-        return await self._client.get_drive_file(file_id)
+        detail, dl = await asyncio.gather(
+            self._client.get_drive_file(file_id),
+            self._client.get_drive_file_download(file_id),
+            return_exceptions=True,
+        )
+        if isinstance(detail, BaseException):
+            raise detail
+        merged = dict(detail)
+        if isinstance(dl, dict):
+            url = dl.get("download_url")
+            if isinstance(url, str) and url:
+                merged["download_url"] = url
+        return merged
+
+    async def get_event_comments(self, event_id_str: str) -> list[dict[str, Any]]:
+        eid, oid = parse_event_id(event_id_str)
+        return await self._client.get_event_comments(eid, oid)
+
+    async def get_event_participants(self, event_id_str: str) -> list[dict[str, Any]]:
+        eid, oid = parse_event_id(event_id_str)
+        return await self._client.get_event_invites(eid, oid)
+
+    async def get_event_tasks(self, event_id_str: str) -> list[dict[str, Any]]:
+        eid, oid = parse_event_id(event_id_str)
+        return await self._client.get_event_tasks(eid, oid)
+
+    async def get_payments_overview(
+        self,
+        *,
+        include_history: bool = True,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        if include_history:
+            pending, plans, claims, history = await asyncio.gather(
+                self._client.get_pending_payments(),
+                self._client.get_payment_plans(),
+                self._client.get_expense_claims(),
+                self._client.get_payment_history(),
+            )
+            return pending, plans, claims, history
+        pending, plans, claims = await asyncio.gather(
+            self._client.get_pending_payments(),
+            self._client.get_payment_plans(),
+            self._client.get_expense_claims(),
+        )
+        return pending, plans, claims, []
+
+    async def get_payment_detail(self, payment_id: int) -> dict[str, Any]:
+        return await self._client.get_payment_detail(payment_id)
+
+    async def get_inbox(self, max_items: int = 20) -> list[dict[str, Any]]:
+        items = await self._client.get_inbox(max_pages=2)
+        return items[:max_items]
 
 
 # --- Formatting functions ---
@@ -550,7 +630,7 @@ def format_post_comments(post: dict[str, Any], comments: list[dict[str, Any]]) -
     return "\n".join(lines)
 
 
-def format_chats(channels: list[dict[str, Any]]) -> str:
+def format_chats(channels: list[dict[str, Any]], current_user_uuid: str | None = None) -> str:
     if not channels:
         return "Ingen chat-samtaler funnet."
     lines = [f"Chat-samtaler ({len(channels)}):"]
@@ -573,7 +653,15 @@ def format_chats(channels: list[dict[str, Any]]) -> str:
             last_text = f" — {sender}: {body[:100]}"
         dt = parse_timestamp(ch.get("last_message_at"))
         when = dt.strftime("%d.%m %H:%M") if dt else ""
-        unread = sum(r.get("unread_messages", 0) for r in (item.get("read") or []) if r.get("unread_messages"))
+        reads = item.get("read") or []
+        if current_user_uuid:
+            unread = sum(
+                r.get("unread_messages", 0)
+                for r in reads
+                if r.get("unread_messages") and (r.get("user") or {}).get("id") == current_user_uuid
+            )
+        else:
+            unread = sum(r.get("unread_messages", 0) for r in reads if r.get("unread_messages"))
         unread_tag = f" 🔵 ({unread} uleste)" if unread else ""
         lines.append(f"- **{name}** ({len(members)} deltakere, {when}){unread_tag}{last_text}\n  ID: `{cid}`")
     return "\n".join(lines)
@@ -637,12 +725,231 @@ def format_drive_file_detail(f: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_event_comments(event_id_str: str, comments: list[dict[str, Any]]) -> str:
+    if not comments:
+        return f"Ingen kommentarer på aktivitet `{event_id_str}`."
+    lines = [f"## Kommentarer på aktivitet `{event_id_str}` ({len(comments)})"]
+    for c in comments:
+        author = _event_user_name(c.get("poster")) if c.get("poster") else (c.get("user_name") or "Ukjent")
+        dt = parse_timestamp(c.get("timestamp") or c.get("created_at"))
+        when = dt.strftime("%d.%m %H:%M") if dt else ""
+        text = (c.get("comment") or c.get("text") or "").strip()
+        likes = c.get("like_count") or 0
+        like_str = f" (👍 {likes})" if likes else ""
+        lines.append(f"- **{author}** ({when}){like_str}: {text}")
+        for reply in c.get("latest_replies") or []:
+            r_author = _event_user_name(reply.get("poster")) if reply.get("poster") else "Ukjent"
+            r_dt = parse_timestamp(reply.get("timestamp"))
+            r_when = r_dt.strftime("%d.%m %H:%M") if r_dt else ""
+            r_text = (reply.get("comment") or reply.get("text") or "").strip()
+            lines.append(f"  - ↳ **{r_author}** ({r_when}): {r_text}")
+    return "\n".join(lines)
+
+
+def format_event_participants(
+    event_id_str: str,
+    invites: list[dict[str, Any]],
+    status_filter: str = "all",
+) -> str:
+    if not invites:
+        return f"Ingen inviterte deltakere funnet for aktivitet `{event_id_str}`."
+
+    accepted: list[str] = []
+    declined: list[str] = []
+    unanswered: list[str] = []
+
+    for inv in invites:
+        name = _event_user_name(inv.get("user"))
+        jersey = inv.get("jersey_number")
+        role_tag = f" #{jersey}" if jersey else ""
+        reason = (inv.get("response_reason") or "").strip()
+        reason_tag = f" ({reason})" if reason else ""
+        wl = inv.get("waiting_list_position")
+        wl_tag = f" [venteliste #{wl}]" if wl is not None else ""
+        entry = f"- {name}{role_tag}{reason_tag}{wl_tag}"
+
+        resp = inv.get("response")
+        if resp == RESPONSE_ACCEPTED or str(resp).lower() in ("attended", "accepted"):
+            accepted.append(entry)
+        elif resp == RESPONSE_DECLINED or str(resp).lower() == "declined":
+            declined.append(entry)
+        else:
+            unanswered.append(entry)
+
+    filt = (status_filter or "all").strip().lower()
+    lines = [
+        f"## Deltakere på aktivitet `{event_id_str}` "
+        f"({len(accepted)} kommer, {len(declined)} kan ikke, {len(unanswered)} ikke svart)"
+    ]
+    if filt in ("all", "accepted") and accepted:
+        lines.append(f"\n### ✅ Kommer ({len(accepted)})")
+        lines.extend(accepted)
+    if filt in ("all", "declined") and declined:
+        lines.append(f"\n### ❌ Kan ikke ({len(declined)})")
+        lines.extend(declined)
+    if filt in ("all", "not_answered") and unanswered:
+        lines.append(f"\n### ❓ Ikke svart ({len(unanswered)})")
+        lines.extend(unanswered)
+    return "\n".join(lines)
+
+
+def format_event_tasks(event_id_str: str, tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return f"Ingen oppgaver eller dugnader knyttet til aktivitet `{event_id_str}`."
+    lines = [f"## Oppgaver / dugnad for aktivitet `{event_id_str}` ({len(tasks)})"]
+    for t in tasks:
+        title = t.get("title") or t.get("name") or "Uten tittel"
+        desc = (t.get("description") or "").strip()
+        accepted_cnt = t.get("accepted_count")
+        needed_cnt = t.get("needed_count") or t.get("spots") or t.get("max_assignees")
+        counts = ""
+        if accepted_cnt is not None and needed_cnt is not None:
+            counts = f" ({accepted_cnt}/{needed_cnt} bekreftet)"
+        elif accepted_cnt is not None:
+            counts = f" ({accepted_cnt} bekreftet)"
+        lines.append(f"- **{title}**{counts} (ID: `{t.get('id', '?')}`)")
+        if desc:
+            lines.append(f"  {desc[:200]}")
+        assignees = t.get("assignees") or t.get("responses") or []
+        if assignees:
+            parts = [
+                f"{_event_user_name(a.get('user') or a)}: {format_response_status(a.get('response'))}"
+                for a in assignees
+            ]
+            lines.append(f"  Tildelt: {', '.join(parts)}")
+    return "\n".join(lines)
+
+
+def format_payments_overview(
+    pending: list[dict[str, Any]],
+    plans: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> str:
+    lines = ["## Betalinger i Hoopit"]
+
+    if pending:
+        lines.append(f"\n### 💳 Ubetalte / ventende betalinger ({len(pending)})")
+        for p in pending:
+            name = p.get("payment_name") or p.get("title") or p.get("name") or "Betaling"
+            amt = format_amount(p.get("amount") or p.get("total_sum"), p.get("currency") or "NOK")
+            due = parse_timestamp(p.get("due_date") or p.get("deadline"))
+            due_str = f" · Frist: {due.strftime('%d.%m.%Y')}" if due else ""
+            group = (p.get("group") or {}).get("name") or p.get("group_name") or ""
+            g_str = f" [{group}]" if group else ""
+            lines.append(f"- **{name}**{g_str} — {amt}{due_str} (ID: `{p.get('id', '?')}`)")
+    else:
+        lines.append("\n### ✅ Ingen ubetalte betalinger")
+
+    if plans:
+        lines.append(f"\n### 📅 Betalingsplaner ({len(plans)})")
+        for pl in plans:
+            name = pl.get("payment_name") or pl.get("name") or "Betalingsplan"
+            lines.append(f"- **{name}** (ID: `{pl.get('id', '?')}`)")
+
+    if claims:
+        lines.append(f"\n### 🧾 Utleggskrav ({len(claims)})")
+        for cl in claims:
+            title = cl.get("title") or cl.get("name") or "Utlegg"
+            status = cl.get("status") or ""
+            amt = format_amount(cl.get("amount") or cl.get("total_sum"), cl.get("currency") or "NOK")
+            st_str = f" ({status})" if status else ""
+            lines.append(f"- **{title}**{st_str} — {amt} (ID: `{cl.get('id', '?')}`)")
+
+    if history:
+        lines.append(f"\n### 📜 Betalingshistorikk ({len(history)})")
+        for h in history:
+            name = h.get("payment_name") or "Betaling"
+            dt = parse_timestamp(h.get("charge_made"))
+            when = dt.strftime("%d.%m.%Y") if dt else "Ukjent dato"
+            group = (h.get("group") or {}).get("name") or ""
+            g_str = f" [{group}]" if group else ""
+            who = ", ".join(
+                (tp.get("full_name") or "").strip()
+                for tp in (h.get("transaction_participants") or [])
+                if tp.get("full_name")
+            )
+            who_str = f" — {who}" if who else ""
+            lines.append(f"- **{name}**{g_str} ({when}){who_str} · ID: `{h.get('id')}`")
+
+    return "\n".join(lines)
+
+
+def format_payment_detail(detail: dict[str, Any]) -> str:
+    name = detail.get("payment_name") or "Betaling"
+    currency = detail.get("currency") or "NOK"
+    total = format_amount(detail.get("total_sum"), currency)
+    paid = format_amount(detail.get("payment_sum"), currency)
+    refunded_raw = detail.get("refunded_sum") or 0
+    dt = parse_timestamp(detail.get("charge_made"))
+    when = format_datetime_no(dt) if dt else "Ukjent dato"
+    group = (detail.get("group") or {}).get("name") or ""
+
+    lines = [
+        f"## 🧾 {name}",
+        f"- **ID:** `{detail.get('id')}`",
+        f"- **Dato:** {when}",
+        f"- **Beløp:** {total} (betalt: {paid})",
+    ]
+    if refunded_raw:
+        lines.append(f"- **Refundert:** {format_amount(refunded_raw, currency)}")
+    if group:
+        lines.append(f"- **Gruppe:** {group}")
+
+    user_payments = detail.get("user_payments") or []
+    if user_payments:
+        lines.append("\n**Deltakere:**")
+        for up in user_payments:
+            uname = _event_user_name(up.get("user"))
+            uamt = format_amount(up.get("amount"), currency)
+            lines.append(f"- {uname}: {uamt}")
+
+    desc = (detail.get("description") or "").strip()
+    if desc:
+        lines.append(f"\n**Beskrivelse:**\n{desc}")
+
+    if detail.get("receipt_url"):
+        lines.append(f"\n- **Kvittering:** {detail['receipt_url']}")
+    return "\n".join(lines)
+
+
+def format_inbox(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "Innboksen er tom — ingen ventende oppgaver, dugnader eller forespørsler."
+    lines = [f"Innboks ({len(items)}):"]
+    for item in items:
+        itype = item.get("type") or item.get("item_type") or "oppgave"
+        title = item.get("title") or item.get("name") or (item.get("task") or {}).get("title") or "Uten tittel"
+        group = (item.get("group") or {}).get("name") or item.get("group_name") or ""
+        g_str = f" [{group}]" if group else ""
+        raw_dt = item.get("datetime") or item.get("start") or item.get("due_date") or item.get("created_at")
+        dt = parse_timestamp(raw_dt)
+        when = f" — {format_datetime_no(dt)}" if dt else ""
+        lines.append(f"- **{title}** ({itype}){g_str}{when}")
+    return "\n".join(lines)
+
+
 # --- MCP Tool Definitions ---
+
+READ_ONLY_ANNOTATIONS: dict[str, bool] = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+RSVP_ANNOTATIONS: dict[str, bool] = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
 
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_groups",
         "description": "List alle Hoopit-grupper med klubb, avdeling og medlemmer.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -653,6 +960,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Hent kommende aktiviteter fra Hoopit. Kan filtreres på gruppe eller medlem/barn. Standard: 7 dager frem."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -680,6 +988,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_event_details",
         "description": "Hent detaljer for en spesifikk aktivitet, inkludert beskrivelse, sted, oppmøte og svarstatus.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -694,6 +1003,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_attendance",
         "description": "Vis påmeldingsstatus for kommende aktiviteter. Fremhever hvilke aktiviteter som mangler svar.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -717,6 +1027,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "respond_to_event",
         "description": "Svar på en aktivitet — aksepter eller avslå for deg selv eller et barn.",
+        "annotations": RSVP_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -743,6 +1054,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_events",
         "description": "Søk i kommende aktiviteter etter tekst i tittel, sted, type eller gruppenavn.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -770,6 +1082,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hva er nytt i Hoopit (varslingsfanen): nye innlegg, kommentarer, invitasjoner og endringer, "
             "nyeste først. Markerer ingenting som lest."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -796,6 +1109,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hent innlegg fra gruppeveggen i Hoopit (beskjeder fra trenere/lagledere), med antall kommentarer "
             "og vedlegg. Les kommentarene med get_post_comments."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -819,6 +1133,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_post_comments",
         "description": "Hent et innlegg med full tekst, vedlegg og alle kommentarer.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -836,6 +1151,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hent nylige chat-samtaler i Hoopit (privat, gruppe og foresatte) med siste melding. "
             "Les en samtale med get_chat_messages."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -850,6 +1166,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_chat_messages",
         "description": "Hent meldingshistorikken i en chat-samtale, eldste først. Markerer ikke som lest.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -873,6 +1190,7 @@ TOOLS: list[dict[str, Any]] = [
             "eller henter detaljer for én fil), source='post' (vedleggs-lenker for et innlegg), eller "
             "source='event' (vedlegg for en aktivitet)."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -887,6 +1205,98 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "Fil-ID (for drive), post-ID (for post), eller '<event_id>:<occurrence_id>' (for event)."
                     ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_event_comments",
+        "description": "Hent kommentarer og svar på en spesifikk aktivitet i Hoopit.",
+        "annotations": READ_ONLY_ANNOTATIONS,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string",
+                    "description": "Aktivitetens ID på formen '<event_id>:<occurrence_id>' (fra get_upcoming_events).",
+                },
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "get_event_participants",
+        "description": (
+            "Hent full deltakerliste for en aktivitet i Hoopit (hvem som kommer, ikke kan, eller ikke har svart)."
+        ),
+        "annotations": READ_ONLY_ANNOTATIONS,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string",
+                    "description": "Aktivitetens ID på formen '<event_id>:<occurrence_id>' (fra get_upcoming_events).",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["all", "accepted", "declined", "not_answered"],
+                    "description": "Filtrér på svarstatus (standard: 'all').",
+                    "default": "all",
+                },
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "get_event_tasks",
+        "description": "Hent dugnader og oppgaver knyttet til en spesifikk aktivitet i Hoopit.",
+        "annotations": READ_ONLY_ANNOTATIONS,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string",
+                    "description": "Aktivitetens ID på formen '<event_id>:<occurrence_id>' (fra get_upcoming_events).",
+                },
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "get_payments",
+        "description": (
+            "Hent oversikt over ubetalte betalinger, betalingsplaner, utleggskrav og betalingshistorikk i Hoopit. "
+            "Oppgi payment_id for å hente full kvittering og detaljer for én historisk betaling."
+        ),
+        "annotations": READ_ONLY_ANNOTATIONS,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_history": {
+                    "type": "boolean",
+                    "description": "Inkluder betalingshistorikk i oversikten (standard: true).",
+                    "default": True,
+                },
+                "payment_id": {
+                    "type": "integer",
+                    "description": "Valgfri betalings-ID (fra historikken) for å hente kvittering og beløp.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_inbox",
+        "description": (
+            "Hent familiens innboks i Hoopit med ventende tildelte oppgaver/dugnader, invitasjoner og krav."
+        ),
+        "annotations": READ_ONLY_ANNOTATIONS,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_items": {
+                    "type": "integer",
+                    "description": "Maks antall elementer å vise (standard: 20).",
+                    "default": 20,
                 },
             },
         },
@@ -990,7 +1400,7 @@ async def handle_tool_call(service: HoopitService, name: str, arguments: dict[st
 
     if name == "get_chats":
         chats = await service.get_chats(max_chats=int(args.get("max_chats", 10)))
-        return format_chats(chats)
+        return format_chats(chats, current_user_uuid=service.user_uuid)
 
     if name == "get_chat_messages":
         chat_id = str(args.get("chat_id", ""))
@@ -1033,5 +1443,35 @@ async def handle_tool_call(service: HoopitService, name: str, arguments: dict[st
                 lines.append(f"- 📎 {name_or_url}{extra}")
             return "\n".join(lines)
         return f"Ukjent vedleggskilde: '{source}'. Bruk 'drive', 'post', eller 'event'."
+
+    if name == "get_event_comments":
+        event_id = str(args.get("event_id", ""))
+        comments = await service.get_event_comments(event_id)
+        return format_event_comments(event_id, comments)
+
+    if name == "get_event_participants":
+        event_id = str(args.get("event_id", ""))
+        status = str(args.get("status") or "all")
+        invites = await service.get_event_participants(event_id)
+        return format_event_participants(event_id, invites, status_filter=status)
+
+    if name == "get_event_tasks":
+        event_id = str(args.get("event_id", ""))
+        tasks = await service.get_event_tasks(event_id)
+        return format_event_tasks(event_id, tasks)
+
+    if name == "get_payments":
+        payment_id = args.get("payment_id")
+        if payment_id is not None:
+            detail = await service.get_payment_detail(int(payment_id))
+            return format_payment_detail(detail)
+        include_history = bool(args.get("include_history", True))
+        pending, plans, claims, history = await service.get_payments_overview(include_history=include_history)
+        return format_payments_overview(pending, plans, claims, history)
+
+    if name == "get_inbox":
+        max_items = int(args.get("max_items", 20))
+        items = await service.get_inbox(max_items=max_items)
+        return format_inbox(items)
 
     return f"Ukjent verktøy: {name}"

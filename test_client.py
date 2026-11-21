@@ -29,9 +29,15 @@ def test_ttl_cache_hit_expire_and_clear():
     cache.set("k", [1, 2, 3])
     assert cache.get("k", ttl=60.0) == [1, 2, 3]
     assert cache.get("k", ttl=0.0) is None
-    cache.set("k2", "v2")
+    cache.set("events:3", ["e1"])
+    cache.set("events:6", ["e2"])
+    cache.set("groups", ["g1"])
+    cache.invalidate_prefix("events:")
+    assert cache.get("events:3", ttl=60.0) is None
+    assert cache.get("events:6", ttl=60.0) is None
+    assert cache.get("groups", ttl=60.0) == ["g1"]
     cache.clear()
-    assert cache.get("k2", ttl=60.0) is None
+    assert cache.get("groups", ttl=60.0) is None
 
 
 async def test_refresh_token_login_and_caching():
@@ -146,6 +152,8 @@ async def test_respond_to_event_patch_and_cache_clear():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/app/users/current/groups/":
             return httpx.Response(200, json=[{"id": 1, "name": "Lag A"}])
+        if request.url.path == "/app/users/current/events/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 20, "event_id": 10}]})
         if request.method == "PATCH":
             body = json.loads(request.content)
             captured.append((request.method, request.url.path, body))
@@ -155,11 +163,15 @@ async def test_respond_to_event_patch_and_cache_clear():
 
     async with make_client(handler, id_token="tok") as client:
         await client.get_groups()
+        await client.get_events(max_pages=3)
         assert client._cache.get("groups", 60.0) is not None
+        assert client._cache.get("events:3", 60.0) is not None
 
         res_acc = await client.respond_to_event(10, 20, 55, accept=True)
         assert res_acc["response"] == RESPONSE_ACCEPTED
-        assert client._cache.get("groups", 60.0) is None
+        # Only events cache is invalidated; groups cache is preserved
+        assert client._cache.get("events:3", 60.0) is None
+        assert client._cache.get("groups", 60.0) is not None
 
         res_dec = await client.respond_to_event(10, 20, 55, accept=False, decline_reason="Syk")
         assert res_dec["response"] == RESPONSE_DECLINED
@@ -199,3 +211,75 @@ async def test_stream_chat_channels_and_messages():
         assert len(chats) == 1
         msgs = await client.get_chat_messages("messaging", "c1", limit=10)
         assert msgs["messages"][0]["text"] == "Hei!"
+
+
+async def test_event_comments_invites_and_tasks_endpoints():
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.headers["Accept"]))
+        if request.url.path == "/app/events/10/occurrences/20/comments/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 1, "comment": "Husk ball"}]})
+        if request.url.path == "/app/events/10/occurrences/20/invites/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"response": 2, "user": {"id": 5}}]})
+        if request.url.path == "/app/tasks/events/10/occurrences/20/tasks/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 7, "title": "Kioskvakt"}]})
+        return httpx.Response(404)
+
+    async with make_client(handler, id_token="tok") as client:
+        comments = await client.get_event_comments(10, 20)
+        invites = await client.get_event_invites(10, 20)
+        tasks = await client.get_event_tasks(10, 20)
+
+    assert comments == [{"id": 1, "comment": "Husk ball"}]
+    assert invites == [{"response": 2, "user": {"id": 5}}]
+    assert tasks == [{"id": 7, "title": "Kioskvakt"}]
+    assert ("/app/events/10/occurrences/20/comments/", "application/problem+json; version=3;") in seen
+    assert ("/app/events/10/occurrences/20/invites/", "application/problem+json; version=1;") in seen
+    assert ("/app/tasks/events/10/occurrences/20/tasks/", "application/problem+json; version=3;") in seen
+
+
+async def test_payments_claims_inbox_and_drive_download_endpoints():
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.path] = request.headers["Accept"]
+        if request.url.path == "/app/drive/files/900/file/":
+            return httpx.Response(200, json={"id": 900, "download_url": "https://cdn.example.test/file.pdf"})
+        if request.url.path == "/app/payments/user-payments/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 1, "payment_name": "Kontingent"}]})
+        if request.url.path == "/app/payments/payments-history/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 2, "payment_name": "Cupavgift"}]})
+        if request.url.path == "/app/payments/payments-history/2/":
+            return httpx.Response(200, json={"id": 2, "total_sum": 25000, "currency": "NOK"})
+        if request.url.path == "/app/payments/payment-plans/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 3, "name": "Delbetaling"}]})
+        if request.url.path == "/app/expenses/claims/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 4, "title": "Dommerutlegg"}]})
+        if request.url.path == "/app/users/current/inbox/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 5, "title": "Vakt søndag"}]})
+        return httpx.Response(404)
+
+    async with make_client(handler, id_token="tok") as client:
+        dl = await client.get_drive_file_download(900)
+        pending = await client.get_pending_payments()
+        history = await client.get_payment_history()
+        detail = await client.get_payment_detail(2)
+        plans = await client.get_payment_plans()
+        claims = await client.get_expense_claims()
+        inbox = await client.get_inbox()
+
+    assert dl["download_url"] == "https://cdn.example.test/file.pdf"
+    assert pending[0]["id"] == 1
+    assert history[0]["id"] == 2
+    assert detail["total_sum"] == 25000
+    assert plans[0]["id"] == 3
+    assert claims[0]["id"] == 4
+    assert inbox[0]["id"] == 5
+    assert "version=1" in seen["/app/drive/files/900/file/"]
+    assert "version=2" in seen["/app/payments/user-payments/"]
+    assert "version=1" in seen["/app/payments/payments-history/"]
+    assert "version=1" in seen["/app/payments/payments-history/2/"]
+    assert "version=1" in seen["/app/payments/payment-plans/"]
+    assert "version=2" in seen["/app/expenses/claims/"]
+    assert "version=17" in seen["/app/users/current/inbox/"]

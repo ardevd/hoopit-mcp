@@ -51,6 +51,7 @@ class HoopitAuth:
         self._lock = asyncio.Lock()
         self.service: HoopitService | None = None
         self.failed_at: float | None = None
+        self._latest_refresh_token: str | None = None
 
     def _backoff_error(self) -> LoginFailed:
         assert self.failed_at is not None
@@ -60,6 +61,9 @@ class HoopitAuth:
     async def _drop(self) -> None:
         svc, self.service = self.service, None
         if svc is not None:
+            rotated = getattr(svc._client, "refresh_token", None)
+            if isinstance(rotated, str) and rotated.strip():
+                self._latest_refresh_token = rotated.strip()
             await svc.close()
 
     async def ensure(self) -> HoopitService:
@@ -69,6 +73,8 @@ class HoopitAuth:
             svc = self.service
             if svc is None:
                 svc = self._factory()
+                if self._latest_refresh_token and hasattr(svc._client, "set_refresh_token"):
+                    svc._client.set_refresh_token(self._latest_refresh_token)
                 self.service = svc
             client = svc._client
             if not client.token:

@@ -16,14 +16,17 @@ from main import HoopitAuth, LoginFailed, OptionalBearerAuth, build_app, require
 from server import TOOLS
 
 
-def test_tools_definitions_expose_all_12_tools():
+def test_tools_definitions_expose_all_17_tools():
     tools = [Tool(**t) for t in TOOLS]
     names = {t.name for t in tools}
-    assert len(tools) == 12
+    assert len(tools) == 17
     assert {
         "list_groups",
         "get_upcoming_events",
         "get_event_details",
+        "get_event_comments",
+        "get_event_participants",
+        "get_event_tasks",
         "get_attendance",
         "respond_to_event",
         "search_events",
@@ -33,7 +36,18 @@ def test_tools_definitions_expose_all_12_tools():
         "get_chats",
         "get_chat_messages",
         "get_attachment",
+        "get_payments",
+        "get_inbox",
     } == names
+    for tool in tools:
+        assert tool.annotations is not None
+        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.idempotentHint is True
+        assert tool.annotations.openWorldHint is True
+        if tool.name == "respond_to_event":
+            assert tool.annotations.readOnlyHint is False
+        else:
+            assert tool.annotations.readOnlyHint is True
 
 
 async def test_hoopit_auth_login_backoff():
@@ -81,6 +95,30 @@ async def test_hoopit_auth_retries_once_on_401():
     assert await auth.run(action) == "ok"
     assert len(created) == 2
     created[0].close.assert_awaited_once()
+
+
+async def test_hoopit_auth_preserves_rotated_refresh_token_across_drop():
+    from hoopit_client import HoopitClient
+
+    created_clients: list[HoopitClient] = []
+
+    def factory():
+        c = HoopitClient(refresh_token="initial-ref", id_token="tok")
+        created_clients.append(c)
+        s = MagicMock()
+        s._client = c
+        s.close = AsyncMock(side_effect=c.close)
+        return s
+
+    auth = HoopitAuth(factory=factory)
+    svc1 = await auth.ensure()
+    svc1._client.set_refresh_token("rotated-ref-2")
+    await auth._drop()
+
+    svc2 = await auth.ensure()
+    assert svc2._client.refresh_token == "rotated-ref-2"
+    assert len(created_clients) == 2
+    await auth._drop()
 
 
 async def test_optional_bearer_auth_enabled():

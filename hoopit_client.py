@@ -85,6 +85,10 @@ class TTLCache:
     def set(self, key: str, value: Any) -> None:
         self._store[key] = (value, time.monotonic())
 
+    def invalidate_prefix(self, prefix: str) -> None:
+        for key in [k for k in self._store if k.startswith(prefix)]:
+            self._store.pop(key, None)
+
     def clear(self) -> None:
         self._store.clear()
 
@@ -131,6 +135,19 @@ class HoopitClient:
     @property
     def token(self) -> str | None:
         return self._id_token
+
+    @property
+    def refresh_token(self) -> str | None:
+        return self._refresh_token
+
+    def set_refresh_token(self, token: str | None) -> None:
+        cleaned = (token or "").strip() or None
+        if cleaned:
+            self._refresh_token = cleaned
+
+    @property
+    def user_uuid(self) -> str | None:
+        return self._user_uuid
 
     @property
     def can_refresh(self) -> bool:
@@ -391,8 +408,44 @@ class HoopitClient:
             version=4,
             json_body=payload,
         )
-        self.clear_cache()
+        self._cache.invalidate_prefix("events:")
         return result
+
+    async def get_event_comments(
+        self,
+        event_id: int,
+        occurrence_id: int,
+        max_pages: int = 3,
+    ) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            f"/app/events/{event_id}/occurrences/{occurrence_id}/comments/",
+            version=3,
+            max_pages=max_pages,
+        )
+
+    async def get_event_invites(
+        self,
+        event_id: int,
+        occurrence_id: int,
+        max_pages: int = 5,
+    ) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            f"/app/events/{event_id}/occurrences/{occurrence_id}/invites/",
+            version=1,
+            max_pages=max_pages,
+        )
+
+    async def get_event_tasks(
+        self,
+        event_id: int,
+        occurrence_id: int,
+        max_pages: int = 3,
+    ) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            f"/app/tasks/events/{event_id}/occurrences/{occurrence_id}/tasks/",
+            version=3,
+            max_pages=max_pages,
+        )
 
     async def get_notifications(self, max_pages: int = 2) -> list[dict[str, Any]]:
         return await self._get_paginated(
@@ -440,6 +493,47 @@ class HoopitClient:
 
     async def get_drive_file(self, file_id: int) -> dict[str, Any]:
         return await self._request("GET", f"/app/drive/files/{file_id}/", version=1)
+
+    async def get_drive_file_download(self, file_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/app/drive/files/{file_id}/file/", version=1)
+
+    async def get_pending_payments(self, max_pages: int = 3) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            "/app/payments/user-payments/",
+            version=2,
+            max_pages=max_pages,
+        )
+
+    async def get_payment_history(self, max_pages: int = 3) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            "/app/payments/payments-history/",
+            version=1,
+            max_pages=max_pages,
+        )
+
+    async def get_payment_detail(self, payment_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/app/payments/payments-history/{payment_id}/", version=1)
+
+    async def get_payment_plans(self, max_pages: int = 2) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            "/app/payments/payment-plans/",
+            version=1,
+            max_pages=max_pages,
+        )
+
+    async def get_expense_claims(self, max_pages: int = 2) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            "/app/expenses/claims/",
+            version=2,
+            max_pages=max_pages,
+        )
+
+    async def get_inbox(self, max_pages: int = 2) -> list[dict[str, Any]]:
+        return await self._get_paginated(
+            "/app/users/current/inbox/",
+            version=17,
+            max_pages=max_pages,
+        )
 
     async def get_tokens(self) -> dict[str, Any]:
         return await self._request("GET", "/app/users/current/tokens/", version=1)
