@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from server import HoopitService, fuzzy_match, handle_tool_call, parse_event_id
+from server import HoopitService, format_amount, fuzzy_match, handle_tool_call, parse_event_id
 
 
 def _iso_in(days: float, hours: float = 0) -> str:
@@ -184,6 +184,78 @@ def _make_mock_client() -> AsyncMock:
         "last_modified_by": {"full_name": "Trener Kari"},
         "last_modified_at": _iso_in(-3),
     }
+    client.get_drive_file_download.return_value = {
+        "id": 900,
+        "download_url": "https://cdn.example.test/dugnadsliste.pdf",
+    }
+    client.get_event_comments.return_value = [
+        {
+            "id": 1,
+            "comment": "Husk å ta med overtrekksvest!",
+            "poster": {"full_name": "Trener Kari"},
+            "timestamp": _iso_in(0, hours=-4),
+            "like_count": 3,
+            "latest_replies": [
+                {
+                    "comment": "Notert!",
+                    "poster": {"full_name": "Forelder Per"},
+                    "timestamp": _iso_in(0, hours=-3),
+                }
+            ],
+        }
+    ]
+    client.get_event_invites.return_value = [
+        {"response": 2, "user": {"full_name": "Emma N"}, "jersey_number": "7", "response_reason": ""},
+        {"response": 1, "user": {"full_name": "Oliver N"}, "jersey_number": None, "response_reason": "Syk"},
+        {"response": 0, "user": {"full_name": "Maja S"}, "waiting_list_position": 1},
+    ]
+    client.get_event_tasks.return_value = [
+        {
+            "id": 44,
+            "title": "Kioskvakt 1. omgang",
+            "description": "Steke vafler og selge kaffe.",
+            "accepted_count": 1,
+            "needed_count": 2,
+            "assignees": [{"user": {"full_name": "Forelder Per"}, "response": 2}],
+        }
+    ]
+    client.get_pending_payments.return_value = [
+        {"id": 301, "payment_name": "Treningsavgift vår", "amount": 125000, "currency": "NOK", "due_date": _iso_in(10)}
+    ]
+    client.get_payment_plans.return_value = [{"id": 401, "payment_name": "Årskontingent delbetaling"}]
+    client.get_expense_claims.return_value = [
+        {"id": 501, "title": "Dommerutlegg", "status": "pending", "amount": 45050}
+    ]
+    client.get_payment_history.return_value = [
+        {
+            "id": 601,
+            "payment_name": "Vintercup påmelding",
+            "charge_made": _iso_in(-14),
+            "group": {"name": "Jenter 2016"},
+            "transaction_participants": [{"id": 10, "full_name": "Emma N"}],
+        }
+    ]
+    client.get_payment_detail.return_value = {
+        "id": 601,
+        "payment_name": "Vintercup påmelding",
+        "currency": "NOK",
+        "payment_sum": 35000,
+        "refunded_sum": 0,
+        "total_sum": 35000,
+        "charge_made": _iso_in(-14),
+        "group": {"name": "Jenter 2016"},
+        "description": "Påmeldingsavgift til cup.",
+        "receipt_url": "https://receipts.example.test/601",
+        "user_payments": [{"id": 1, "user": {"full_name": "Emma N"}, "amount": 35000}],
+    }
+    client.get_inbox.return_value = [
+        {
+            "type": "task",
+            "title": "Dugnad vakt søndag",
+            "group": {"name": "Jenter 2016"},
+            "datetime": _iso_in(3),
+        }
+    ]
     return client
 
 
@@ -323,6 +395,7 @@ async def test_get_attachment_sources():
     drive_one = await handle_tool_call(svc, "get_attachment", {"source": "drive", "item_id": "900"})
     assert "100.0 KB" in drive_one
     assert "Trener Kari" in drive_one
+    assert "https://cdn.example.test/dugnadsliste.pdf" in drive_one
 
     post_att = await handle_tool_call(svc, "get_attachment", {"source": "post", "item_id": "800"})
     assert "https://example.test/img.jpg" in post_att
@@ -374,6 +447,74 @@ async def test_respond_to_event_rejects_locked_response():
     svc = HoopitService(client)
     with pytest.raises(ValueError, match="Kan ikke endre svar"):
         await handle_tool_call(svc, "respond_to_event", {"event_id": "500:1800000000", "accept": True})
+
+
+def test_format_amount():
+    assert format_amount(50000, "NOK") == "500 kr"
+    assert format_amount(45050, "NOK") == "450,50 kr"
+    assert format_amount(1250, "EUR") == "12.50 EUR"
+    assert format_amount(None) == "ukjent beløp"
+
+
+async def test_get_event_comments_participants_and_tasks():
+    svc = HoopitService(_make_mock_client())
+
+    comments_out = await handle_tool_call(svc, "get_event_comments", {"event_id": "500:1800000000"})
+    assert "Trener Kari" in comments_out
+    assert "overtrekksvest" in comments_out
+    assert "Forelder Per" in comments_out
+    assert "👍 3" in comments_out
+
+    all_parts = await handle_tool_call(svc, "get_event_participants", {"event_id": "500:1800000000"})
+    assert "Emma N #7" in all_parts
+    assert "Oliver N (Syk)" in all_parts
+    assert "Maja S [venteliste #1]" in all_parts
+
+    only_accepted = await handle_tool_call(
+        svc,
+        "get_event_participants",
+        {"event_id": "500:1800000000", "status": "accepted"},
+    )
+    assert "Emma N #7" in only_accepted
+    assert "Oliver N" not in only_accepted
+
+    tasks_out = await handle_tool_call(svc, "get_event_tasks", {"event_id": "500:1800000000"})
+    assert "Kioskvakt 1. omgang" in tasks_out
+    assert "(1/2 bekreftet)" in tasks_out
+    assert "Forelder Per: ✅ Kommer" in tasks_out
+
+
+async def test_get_payments_overview_and_receipt():
+    svc = HoopitService(_make_mock_client())
+
+    overview = await handle_tool_call(svc, "get_payments", {"include_history": True})
+    assert "Treningsavgift vår" in overview
+    assert "1250 kr" in overview
+    assert "Årskontingent delbetaling" in overview
+    assert "Dommerutlegg" in overview
+    assert "450,50 kr" in overview
+    assert "Vintercup påmelding" in overview
+
+    no_hist = await handle_tool_call(svc, "get_payments", {"include_history": False})
+    assert "Treningsavgift vår" in no_hist
+    assert "Vintercup påmelding" not in no_hist
+
+    receipt = await handle_tool_call(svc, "get_payments", {"payment_id": 601})
+    assert "350 kr" in receipt
+    assert "https://receipts.example.test/601" in receipt
+    assert "Emma N: 350 kr" in receipt
+
+
+async def test_get_inbox():
+    client = _make_mock_client()
+    svc = HoopitService(client)
+    out = await handle_tool_call(svc, "get_inbox", {"max_items": 10})
+    assert "Dugnad vakt søndag" in out
+    assert "Jenter 2016" in out
+
+    client.get_inbox.return_value = []
+    empty = await handle_tool_call(svc, "get_inbox", {})
+    assert "Innboksen er tom" in empty
 
 
 async def test_unknown_tool():

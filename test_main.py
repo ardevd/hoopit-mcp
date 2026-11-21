@@ -39,6 +39,15 @@ def test_tools_definitions_expose_all_17_tools():
         "get_payments",
         "get_inbox",
     } == names
+    for tool in tools:
+        assert tool.annotations is not None
+        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.idempotentHint is True
+        assert tool.annotations.openWorldHint is True
+        if tool.name == "respond_to_event":
+            assert tool.annotations.readOnlyHint is False
+        else:
+            assert tool.annotations.readOnlyHint is True
 
 
 async def test_hoopit_auth_login_backoff():
