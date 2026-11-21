@@ -16,14 +16,17 @@ from main import HoopitAuth, LoginFailed, OptionalBearerAuth, build_app, require
 from server import TOOLS
 
 
-def test_tools_definitions_expose_all_12_tools():
+def test_tools_definitions_expose_all_17_tools():
     tools = [Tool(**t) for t in TOOLS]
     names = {t.name for t in tools}
-    assert len(tools) == 12
+    assert len(tools) == 17
     assert {
         "list_groups",
         "get_upcoming_events",
         "get_event_details",
+        "get_event_comments",
+        "get_event_participants",
+        "get_event_tasks",
         "get_attendance",
         "respond_to_event",
         "search_events",
@@ -33,6 +36,8 @@ def test_tools_definitions_expose_all_12_tools():
         "get_chats",
         "get_chat_messages",
         "get_attachment",
+        "get_payments",
+        "get_inbox",
     } == names
 
 
