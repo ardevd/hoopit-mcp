@@ -1,12 +1,13 @@
 # hoopit-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server for [Hoopit](https://hoopit.io/) sports team and activity management, modeled after [`spond-no-match-mcp`](../spond-no-match-mcp). Gives AI assistants read-only access to groups, upcoming trainings/matches, attendance, posts, notifications, chats, and Drive files — plus RSVP support.
+An [MCP](https://modelcontextprotocol.io/) server for [Hoopit](https://hoopit.io/) sports team and activity management, modeled after [`spond-no-match-mcp`](../spond-no-match-mcp). Gives AI assistants read-only access to groups, upcoming trainings/matches, attendance, event comments/participants/tasks, payments, inbox, posts, notifications, chats, and Drive files — plus RSVP support.
 
 ## Features
 
-- **12 MCP tools** — groups, upcoming events, event details, attendance, RSVP, search, updates, posts, comments, chats, chat messages, and attachments/Drive files
+- **17 MCP tools** — groups, upcoming events, event details, event comments, event participants, event tasks/dugnad, attendance, RSVP, search, updates, posts, post comments, chats, chat messages, Drive files & attachments (with presigned download URLs), payments/claims/receipts, and family inbox
+- **MCP tool annotations** — every tool exposes accurate `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` metadata
 - **Norwegian output** — responses formatted in Norwegian (`Europe/Oslo` timezone, Norwegian weekdays and status labels)
-- **TTL caching** — groups & user profile cached 1h, events/posts/files 5min, chats 1min (automatically invalidated on RSVP)
+- **TTL caching** — groups & user profile cached 1h, events/posts/files 5min, chats 1min (targeted event cache invalidation on RSVP)
 - **Optional bearer auth** — set `MCP_AUTH_TOKEN` to protect `/sse` and `/messages/`; `/health` is always open
 - **Read-only by default** — all tools except `respond_to_event` are strictly read-only and never mark notifications or chats as read
 
@@ -17,15 +18,20 @@ An [MCP](https://modelcontextprotocol.io/) server for [Hoopit](https://hoopit.io
 | `list_groups` | List all Hoopit groups with club, division, and members |
 | `get_upcoming_events` | Upcoming events, filterable by `days`, `from_days`, `group_name`, or `member_name` |
 | `get_event_details` | Full details for an event (`<event_id>:<occurrence_id>`): description, location, meetup, deadline, RSVP |
+| `get_event_comments` | Comments and replies on an event occurrence (`<event_id>:<occurrence_id>`) |
+| `get_event_participants` | Full participant/invite list for an event, filterable by `status` (`all`, `accepted`, `declined`, `not_answered`) |
+| `get_event_tasks` | Dugnad and tasks attached to an event occurrence |
 | `get_attendance` | Upcoming events grouped by unanswered vs. answered responses |
 | `respond_to_event` | Accept or decline an event for yourself or a child (`event_id`, `accept`, optional `member_name` & `decline_message`) |
 | `search_events` | Search upcoming events by title, location, type, or group |
 | `get_updates` | Notification feed (newest first, filterable by group and `since_hours`) |
 | `get_posts` | Group wall posts with comment/like/attachment counts |
 | `get_post_comments` | Full post text, attachment links, and all comments |
-| `get_chats` | Recent chats (direct, group, guardian) via Stream Chat with last message and unread count |
+| `get_chats` | Recent chats (direct, group, guardian) via Stream Chat with last message and per-user unread count |
 | `get_chat_messages` | Message history for one chat (`<type>:<id>`), oldest first |
-| `get_attachment` | List/inspect Hoopit Drive files (`source="drive"`), or fetch attachment links for a `post` or `event` |
+| `get_attachment` | List/inspect Hoopit Drive files with presigned download links (`source="drive"`), or fetch attachment links for a `post` or `event` |
+| `get_payments` | Pending payments, payment plans, expense claims, and payment history (or full receipt details by `payment_id`) |
+| `get_inbox` | Family inbox with pending assigned tasks/dugnad, invitations, and action items |
 
 ## Quick Start
 

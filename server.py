@@ -931,10 +931,25 @@ def format_inbox(items: list[dict[str, Any]]) -> str:
 
 # --- MCP Tool Definitions ---
 
+READ_ONLY_ANNOTATIONS: dict[str, bool] = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+RSVP_ANNOTATIONS: dict[str, bool] = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_groups",
         "description": "List alle Hoopit-grupper med klubb, avdeling og medlemmer.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -945,6 +960,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Hent kommende aktiviteter fra Hoopit. Kan filtreres på gruppe eller medlem/barn. Standard: 7 dager frem."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -972,6 +988,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_event_details",
         "description": "Hent detaljer for en spesifikk aktivitet, inkludert beskrivelse, sted, oppmøte og svarstatus.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -986,6 +1003,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_attendance",
         "description": "Vis påmeldingsstatus for kommende aktiviteter. Fremhever hvilke aktiviteter som mangler svar.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1009,6 +1027,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "respond_to_event",
         "description": "Svar på en aktivitet — aksepter eller avslå for deg selv eller et barn.",
+        "annotations": RSVP_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1035,6 +1054,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_events",
         "description": "Søk i kommende aktiviteter etter tekst i tittel, sted, type eller gruppenavn.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1062,6 +1082,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hva er nytt i Hoopit (varslingsfanen): nye innlegg, kommentarer, invitasjoner og endringer, "
             "nyeste først. Markerer ingenting som lest."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1088,6 +1109,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hent innlegg fra gruppeveggen i Hoopit (beskjeder fra trenere/lagledere), med antall kommentarer "
             "og vedlegg. Les kommentarene med get_post_comments."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1111,6 +1133,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_post_comments",
         "description": "Hent et innlegg med full tekst, vedlegg og alle kommentarer.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1128,6 +1151,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hent nylige chat-samtaler i Hoopit (privat, gruppe og foresatte) med siste melding. "
             "Les en samtale med get_chat_messages."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1142,6 +1166,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_chat_messages",
         "description": "Hent meldingshistorikken i en chat-samtale, eldste først. Markerer ikke som lest.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1165,6 +1190,7 @@ TOOLS: list[dict[str, Any]] = [
             "eller henter detaljer for én fil), source='post' (vedleggs-lenker for et innlegg), eller "
             "source='event' (vedlegg for en aktivitet)."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1186,6 +1212,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_event_comments",
         "description": "Hent kommentarer og svar på en spesifikk aktivitet i Hoopit.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1202,6 +1229,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Hent full deltakerliste for en aktivitet i Hoopit (hvem som kommer, ikke kan, eller ikke har svart)."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1222,6 +1250,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_event_tasks",
         "description": "Hent dugnader og oppgaver knyttet til en spesifikk aktivitet i Hoopit.",
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1239,6 +1268,7 @@ TOOLS: list[dict[str, Any]] = [
             "Hent oversikt over ubetalte betalinger, betalingsplaner, utleggskrav og betalingshistorikk i Hoopit. "
             "Oppgi payment_id for å hente full kvittering og detaljer for én historisk betaling."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1259,6 +1289,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Hent familiens innboks i Hoopit med ventende tildelte oppgaver/dugnader, invitasjoner og krav."
         ),
+        "annotations": READ_ONLY_ANNOTATIONS,
         "inputSchema": {
             "type": "object",
             "properties": {
