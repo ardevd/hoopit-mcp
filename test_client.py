@@ -29,9 +29,15 @@ def test_ttl_cache_hit_expire_and_clear():
     cache.set("k", [1, 2, 3])
     assert cache.get("k", ttl=60.0) == [1, 2, 3]
     assert cache.get("k", ttl=0.0) is None
-    cache.set("k2", "v2")
+    cache.set("events:3", ["e1"])
+    cache.set("events:6", ["e2"])
+    cache.set("groups", ["g1"])
+    cache.invalidate_prefix("events:")
+    assert cache.get("events:3", ttl=60.0) is None
+    assert cache.get("events:6", ttl=60.0) is None
+    assert cache.get("groups", ttl=60.0) == ["g1"]
     cache.clear()
-    assert cache.get("k2", ttl=60.0) is None
+    assert cache.get("groups", ttl=60.0) is None
 
 
 async def test_refresh_token_login_and_caching():
@@ -146,6 +152,8 @@ async def test_respond_to_event_patch_and_cache_clear():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/app/users/current/groups/":
             return httpx.Response(200, json=[{"id": 1, "name": "Lag A"}])
+        if request.url.path == "/app/users/current/events/":
+            return httpx.Response(200, json={"has_next": False, "results": [{"id": 20, "event_id": 10}]})
         if request.method == "PATCH":
             body = json.loads(request.content)
             captured.append((request.method, request.url.path, body))
@@ -155,11 +163,15 @@ async def test_respond_to_event_patch_and_cache_clear():
 
     async with make_client(handler, id_token="tok") as client:
         await client.get_groups()
+        await client.get_events(max_pages=3)
         assert client._cache.get("groups", 60.0) is not None
+        assert client._cache.get("events:3", 60.0) is not None
 
         res_acc = await client.respond_to_event(10, 20, 55, accept=True)
         assert res_acc["response"] == RESPONSE_ACCEPTED
-        assert client._cache.get("groups", 60.0) is None
+        # Only events cache is invalidated; groups cache is preserved
+        assert client._cache.get("events:3", 60.0) is None
+        assert client._cache.get("groups", 60.0) is not None
 
         res_dec = await client.respond_to_event(10, 20, 55, accept=False, decline_reason="Syk")
         assert res_dec["response"] == RESPONSE_DECLINED

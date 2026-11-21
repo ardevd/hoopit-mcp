@@ -85,6 +85,10 @@ class TTLCache:
     def set(self, key: str, value: Any) -> None:
         self._store[key] = (value, time.monotonic())
 
+    def invalidate_prefix(self, prefix: str) -> None:
+        for key in [k for k in self._store if k.startswith(prefix)]:
+            self._store.pop(key, None)
+
     def clear(self) -> None:
         self._store.clear()
 
@@ -131,6 +135,19 @@ class HoopitClient:
     @property
     def token(self) -> str | None:
         return self._id_token
+
+    @property
+    def refresh_token(self) -> str | None:
+        return self._refresh_token
+
+    def set_refresh_token(self, token: str | None) -> None:
+        cleaned = (token or "").strip() or None
+        if cleaned:
+            self._refresh_token = cleaned
+
+    @property
+    def user_uuid(self) -> str | None:
+        return self._user_uuid
 
     @property
     def can_refresh(self) -> bool:
@@ -391,7 +408,7 @@ class HoopitClient:
             version=4,
             json_body=payload,
         )
-        self.clear_cache()
+        self._cache.invalidate_prefix("events:")
         return result
 
     async def get_notifications(self, max_pages: int = 2) -> list[dict[str, Any]]:

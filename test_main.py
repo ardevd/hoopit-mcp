@@ -83,6 +83,30 @@ async def test_hoopit_auth_retries_once_on_401():
     created[0].close.assert_awaited_once()
 
 
+async def test_hoopit_auth_preserves_rotated_refresh_token_across_drop():
+    from hoopit_client import HoopitClient
+
+    created_clients: list[HoopitClient] = []
+
+    def factory():
+        c = HoopitClient(refresh_token="initial-ref", id_token="tok")
+        created_clients.append(c)
+        s = MagicMock()
+        s._client = c
+        s.close = AsyncMock(side_effect=c.close)
+        return s
+
+    auth = HoopitAuth(factory=factory)
+    svc1 = await auth.ensure()
+    svc1._client.set_refresh_token("rotated-ref-2")
+    await auth._drop()
+
+    svc2 = await auth.ensure()
+    assert svc2._client.refresh_token == "rotated-ref-2"
+    assert len(created_clients) == 2
+    await auth._drop()
+
+
 async def test_optional_bearer_auth_enabled():
     inner = Starlette(routes=[Route("/secret", lambda req: PlainTextResponse("secret-ok"))])
     app = OptionalBearerAuth(inner, token="my-secret-token")

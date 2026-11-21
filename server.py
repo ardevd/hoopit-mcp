@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -91,10 +92,12 @@ def parse_event_id(raw: str) -> tuple[int, int]:
 
 
 def fuzzy_match(text: str, query: str) -> bool:
-    t = (text or "").lower()
+    t = (text or "").strip().lower()
     q = (query or "").strip().lower()
     if not q:
         return True
+    if not t:
+        return False
     return q in t or t in q
 
 
@@ -145,6 +148,11 @@ class HoopitService:
     def clear_cache(self) -> None:
         self._client.clear_cache()
 
+    @property
+    def user_uuid(self) -> str | None:
+        val = getattr(self._client, "user_uuid", None)
+        return val if isinstance(val, str) and val else None
+
     async def get_groups(self) -> list[dict[str, Any]]:
         return await self._client.get_groups()
 
@@ -184,8 +192,10 @@ class HoopitService:
 
     async def get_event_details(self, event_id_str: str) -> tuple[dict[str, Any], dict[str, Any]]:
         eid, oid = parse_event_id(event_id_str)
-        detail = await self._client.get_event_details(eid, oid)
-        my_responses = await self._client.get_my_responses(eid, oid)
+        detail, my_responses = await asyncio.gather(
+            self._client.get_event_details(eid, oid),
+            self._client.get_my_responses(eid, oid),
+        )
         return detail, my_responses
 
     async def respond_to_event(
@@ -223,6 +233,11 @@ class HoopitService:
         if not user_id:
             raise ValueError("Mangler bruker-ID for medlemmet.")
         resolved_name = _event_user_name(target.get("user"))
+        if target.get("can_edit_response") is False:
+            raise ValueError(
+                f"Kan ikke endre svar for {resolved_name} på denne aktiviteten "
+                "(svarfristen kan være utløpt eller låst)."
+            )
         result = await self._client.respond_to_event(
             eid,
             oid,
@@ -278,8 +293,10 @@ class HoopitService:
         return out
 
     async def get_post_with_comments(self, post_id: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        post = await self._client.get_post(post_id)
-        comments = await self._client.get_post_comments(post_id)
+        post, comments = await asyncio.gather(
+            self._client.get_post(post_id),
+            self._client.get_post_comments(post_id),
+        )
         return post, comments
 
     async def get_chats(self, max_chats: int = 10) -> list[dict[str, Any]]:
@@ -550,7 +567,7 @@ def format_post_comments(post: dict[str, Any], comments: list[dict[str, Any]]) -
     return "\n".join(lines)
 
 
-def format_chats(channels: list[dict[str, Any]]) -> str:
+def format_chats(channels: list[dict[str, Any]], current_user_uuid: str | None = None) -> str:
     if not channels:
         return "Ingen chat-samtaler funnet."
     lines = [f"Chat-samtaler ({len(channels)}):"]
@@ -573,7 +590,15 @@ def format_chats(channels: list[dict[str, Any]]) -> str:
             last_text = f" — {sender}: {body[:100]}"
         dt = parse_timestamp(ch.get("last_message_at"))
         when = dt.strftime("%d.%m %H:%M") if dt else ""
-        unread = sum(r.get("unread_messages", 0) for r in (item.get("read") or []) if r.get("unread_messages"))
+        reads = item.get("read") or []
+        if current_user_uuid:
+            unread = sum(
+                r.get("unread_messages", 0)
+                for r in reads
+                if r.get("unread_messages") and (r.get("user") or {}).get("id") == current_user_uuid
+            )
+        else:
+            unread = sum(r.get("unread_messages", 0) for r in reads if r.get("unread_messages"))
         unread_tag = f" 🔵 ({unread} uleste)" if unread else ""
         lines.append(f"- **{name}** ({len(members)} deltakere, {when}){unread_tag}{last_text}\n  ID: `{cid}`")
     return "\n".join(lines)
@@ -990,7 +1015,7 @@ async def handle_tool_call(service: HoopitService, name: str, arguments: dict[st
 
     if name == "get_chats":
         chats = await service.get_chats(max_chats=int(args.get("max_chats", 10)))
-        return format_chats(chats)
+        return format_chats(chats, current_user_uuid=service.user_uuid)
 
     if name == "get_chat_messages":
         chat_id = str(args.get("chat_id", ""))

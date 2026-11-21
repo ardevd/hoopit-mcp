@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from server import HoopitService, handle_tool_call, parse_event_id
+from server import HoopitService, fuzzy_match, handle_tool_call, parse_event_id
 
 
 def _iso_in(days: float, hours: float = 0) -> str:
@@ -187,6 +187,13 @@ def _make_mock_client() -> AsyncMock:
     return client
 
 
+def test_fuzzy_match_rejects_empty_text():
+    assert fuzzy_match("", "Jenter 2016") is False
+    assert fuzzy_match("   ", "Jenter 2016") is False
+    assert fuzzy_match("Jenter 2016", "") is True
+    assert fuzzy_match("Jenter 2016", "jenter") is True
+
+
 def test_parse_event_id():
     assert parse_event_id("500:1800000000") == (500, 1800000000)
     assert parse_event_id("500/1800000000") == (500, 1800000000)
@@ -322,6 +329,51 @@ async def test_get_attachment_sources():
 
     ev_att = await handle_tool_call(svc, "get_attachment", {"source": "event", "item_id": "500:1800000000"})
     assert "Treningsplan.pdf" in ev_att
+
+
+async def test_get_chats_filters_unread_to_current_user():
+    client = _make_mock_client()
+    client.user_uuid = "me-uuid"
+    client.get_chats.return_value = [
+        {
+            "channel": {
+                "cid": "messaging:chan-2",
+                "type": "messaging",
+                "id": "chan-2",
+                "name": "Stor foreldregruppe",
+                "last_message_at": _iso_in(0, hours=-1),
+            },
+            "members": [{"user": {"id": "me-uuid", "name": "Meg"}}, {"user": {"id": "other-uuid", "name": "Per"}}],
+            "messages": [{"user": {"name": "Per"}, "text": "Hei"}],
+            "read": [
+                {"user": {"id": "me-uuid"}, "unread_messages": 0},
+                {"user": {"id": "other-uuid"}, "unread_messages": 17},
+            ],
+        }
+    ]
+    svc = HoopitService(client)
+    out = await handle_tool_call(svc, "get_chats", {"max_chats": 5})
+    assert "Stor foreldregruppe" in out
+    assert "17 uleste" not in out
+    assert "uleste" not in out
+
+
+async def test_respond_to_event_rejects_locked_response():
+    client = _make_mock_client()
+    client.get_my_responses.return_value = {
+        "organizers": [],
+        "participants": [
+            {
+                "id": 10,
+                "user_id": 10,
+                "can_edit_response": False,
+                "user": {"id": 10, "full_name": "Emma N"},
+            }
+        ],
+    }
+    svc = HoopitService(client)
+    with pytest.raises(ValueError, match="Kan ikke endre svar"):
+        await handle_tool_call(svc, "respond_to_event", {"event_id": "500:1800000000", "accept": True})
 
 
 async def test_unknown_tool():
