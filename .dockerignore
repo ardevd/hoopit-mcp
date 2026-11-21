@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+.pi
+.unipi
+__pycache__
+*.pyc
+.env
+.env.*
+docs
+test_*.py
+requirements-dev.txt
+README.md

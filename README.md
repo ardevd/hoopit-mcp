@@ -49,6 +49,17 @@ The server starts on port `8080`:
 - Health check: `http://localhost:8080/health`
 - MCP SSE endpoint: `http://localhost:8080/sse`
 
+### Run with Docker
+
+```bash
+docker build -t hoopit-mcp .
+
+docker run --rm -p 8080:8080 \
+  -e HOOPIT_REFRESH_TOKEN="your-firebase-refresh-token" \
+  -e MCP_AUTH_TOKEN="optional-bearer-token" \
+  hoopit-mcp
+```
+
 ### Environment Variables
 
 | Variable | Required | Default | Description |
