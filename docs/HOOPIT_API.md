@@ -84,6 +84,16 @@ Hoopit models events as `(event_id, occurrence_id)` pairs (recurring events shar
     - `home_team_name`, `away_team_name`, `home_team_score`, `away_team_score`, `tournament_name`
     - `invites`: `{participants_total, participants_accepted, participants_declined, participants_waiting_list, member_invites_total, ...}`
     - `attachments[]`
+- **`GET /app/events/{event_id}/occurrences/{occurrence_id}/comments/?page={page}&pagination_count=false`** (`version=3`)
+  - Paginated comments on an event occurrence (`has_next`, `results[]`).
+  - Each item: `id`, `comment` (str), `poster` (`{id, first_name, last_name, full_name, ...}`), `timestamp` (ISO 8601), `like_count`, `reply_count`, `images[]`, `parent_id`, `latest_replies[]`.
+- **`GET /app/events/{event_id}/occurrences/{occurrence_id}/invites/?page={page}&pagination_count=false`** (`version=1`)
+  - Paginated full participant/invite list for an event occurrence (`has_next`, `results[]`).
+  - Each item: `response_id`, `event_invitation_id`, `response` (int: `0` = not answered, `1` = declined, `2` = accepted), `user` (`{id, first_name, last_name, full_name, ...}`), `is_player` (bool), `jersey_number` (str | null), `response_reason` (str), `attendance` (int), `note` (str), `responded_at` (ISO 8601 | null), `groups[]`, `waiting_list_position` (int | null).
+- **`GET /app/events/{event_id}/occurrences/{occurrence_id}/participant-counts/`** (`version=1`)
+  - Summary counts: `{accepted, declined, not_responded, waiting_list, spot_offer_pending, total}`.
+- **`GET /app/tasks/events/{event_id}/occurrences/{occurrence_id}/tasks/?page={page}&pagination_count=false`** (`version=3`)
+  - Paginated dugnad/tasks attached to an event occurrence (`has_next`, `results[]`).
 
 ### 4. Attendance & RSVP
 
@@ -124,8 +134,31 @@ Hoopit models events as `(event_id, occurrence_id)` pairs (recurring events shar
 - **`GET /app/drive/my/files/?page={page}&pagination_count=false`** (`version=1`)
   - Paginated Drive files accessible to the user (`id`, `name`, `file_type`, `mime_type`, `size`, `last_modified`, `group_path`).
 - **`GET /app/drive/files/{file_id}/`** (`version=1`)
-  - Detailed metadata for a Drive file (`name`, `file_type`, `mime_type`, `size`, `group`, `last_modified_by`, `last_modified_at`).
+  - Detailed metadata for a Drive file (`name`, `file_type`, `mime_type`, `size`, `group`, `last_modified_by`, `last_modified_at`). Does not include a download URL.
+- **`GET /app/drive/files/{file_id}/file/`** (`version=1`)
+  - Returns a presigned download URL for a Drive file: `{"id": int, "download_url": "<presigned_url>"}`.
 - Post attachments (`GET /app/posts/{post_id}/`) and event attachments (`GET /app/events/{event_id}/occurrences/{occurrence_id}/`) include direct presigned S3 URLs when present.
+
+### 8. Payments, Payment Plans & Expense Claims
+
+Amounts (`payment_sum`, `refunded_sum`, `total_sum`, `amount`) are integers in minor currency units (øre = 1/100 NOK).
+
+- **`GET /app/payments/user-payments/?page={page}&pagination_count=false`** (`version=2`)
+  - Paginated pending/unpaid user payments (`has_next`, `payment_plans_count`, `results[]`).
+- **`GET /app/payments/payments-history/?page={page}&pagination_count=false`** (`version=1`)
+  - Paginated completed payment history (`has_next`, `results[]`).
+  - Each item: `id`, `payment_name`, `charge_made` (ISO 8601), `group` (`{id, name, color_scheme}`), `transaction_participants[]` (`[{id, full_name}]`).
+- **`GET /app/payments/payments-history/{payment_id}/`** (`version=1`)
+  - Full payment receipt detail: `id`, `group`, `payment_name`, `payment_type`, `description`, `currency`, `payment_sum`, `refunded_sum`, `total_sum`, `charge_made`, `receipt_url`, `is_paid_manually`, `user_payments[]` (`[{id, user: {id, full_name}, amount}]`), `refunds[]`.
+- **`GET /app/payments/payment-plans/?page={page}&pagination_count=false`** (`version=1`)
+  - Paginated active payment plans (`has_next`, `results[]`).
+- **`GET /app/expenses/claims/?page={page}&pagination_count=false`** (`version=2`)
+  - Paginated expense/reimbursement claims (`has_next`, `results[]`).
+
+### 9. Family Inbox (Assigned Tasks, Dugnad & Pending Actions)
+
+- **`GET /app/users/current/inbox/?page={page}&pagination_count=false`** (`version=17`)
+  - Paginated family action inbox (`has_next`, `results[]`) covering pending assigned tasks/dugnad, invitations, and payments across the user and supervised children.
 
 ---
 
